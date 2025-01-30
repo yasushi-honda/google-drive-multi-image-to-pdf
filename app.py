@@ -1,9 +1,8 @@
 from flask import Flask, request, jsonify
-from google.oauth2 import service_account
+from google.auth import default
 from googleapiclient.discovery import build
-from google.cloud import secretmanager
-from PIL import Image, ExifTags
 from googleapiclient.http import MediaIoBaseDownload, MediaIoBaseUpload
+from PIL import Image, ExifTags
 import cv2
 import numpy as np
 import io
@@ -15,31 +14,16 @@ app = Flask(__name__)
 logging.basicConfig(level=logging.INFO)
 
 # ======== グローバル変数・定数設定 ========
-SERVICE_ACCOUNT_SECRET_NAME = "projects/715443572768/secrets/service-account-key/versions/latest"
 PDF_UPLOAD_MIME_TYPE = 'application/pdf'
 DRIVE_URL_TEMPLATE = "https://drive.google.com/file/d/{}/view"
 API_SCOPES = ['https://www.googleapis.com/auth/drive']
 
-# ======== Secret Managerから認証情報を取得する関数 ========
-def get_service_account_credentials():
-    try:
-        client = secretmanager.SecretManagerServiceClient()
-        response = client.access_secret_version(name=SERVICE_ACCOUNT_SECRET_NAME)
-        service_account_info = json.loads(response.payload.data.decode("UTF-8"))
-        credentials = service_account.Credentials.from_service_account_info(
-            service_account_info, scopes=API_SCOPES
-        )
-        logging.info("Secret Managerからサービスアカウントの認証情報を取得しました。")
-        return credentials
-    except Exception as e:
-        logging.error("サービスアカウントの認証情報取得に失敗しました: %s", e)
-        raise
-
 # ======== Google APIの初期化 ========
 try:
-    credentials = get_service_account_credentials()
+    # Workload Identity での認証（環境変数不要）
+    credentials, project_id = default(scopes=API_SCOPES)
     drive_service = build('drive', 'v3', credentials=credentials)
-    logging.info("Google Drive APIが正常に初期化されました。")
+    logging.info("Google Drive APIが Workload Identity を使用して正常に初期化されました。")
 except Exception as e:
     logging.error("APIの初期化に失敗しました: %s", e)
     raise
@@ -134,7 +118,8 @@ def correct_perspective(image):
         rect[1], rect[3] = pts[np.argmin(diff)], pts[np.argmax(diff)]
         (tl, tr, br, bl) = rect
 
-        maxWidth, maxHeight = int(max(np.linalg.norm(br - bl), np.linalg.norm(tr - tl))), int(max(np.linalg.norm(tr - br), np.linalg.norm(tl - bl)))
+        maxWidth = int(max(np.linalg.norm(br - bl), np.linalg.norm(tr - tl)))
+        maxHeight = int(max(np.linalg.norm(tr - br), np.linalg.norm(tl - bl)))
         dst = np.array([[0, 0], [maxWidth - 1, 0], [maxWidth - 1, maxHeight - 1], [0, maxHeight - 1]], dtype="float32")
         M = cv2.getPerspectiveTransform(rect, dst)
         warped = cv2.warpPerspective(np.array(image), M, (maxWidth, maxHeight))
